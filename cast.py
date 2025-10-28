@@ -200,43 +200,47 @@ class cast(ctk.CTk):
         if not path:
             return
         
-        # --- [MODIFIKASI DI SINI] ---
-        # Reset UI *sebelum* menyimpan path baru
-        self.reset_ui_state() 
-        # --- [AKHIR MODIFIKASI] ---
+        # --- Reset UI sebelum memuat gambar baru ---
+        self.reset_ui_state()
+        start_time = time.time()
+        self.path_asli = path
 
-        start_time = time.time() # <-- Mulai hitung waktu
-        
-        self.path_asli = path # <-- Path baru disimpan *setelah* reset
-        
         try:
-            img = Image.open(self.path_asli) # <-- Sekarang self.path_asli valid
-            # Konversi ke RGB di sini untuk konsistensi, tapi simpan array float32
+            # Buka gambar dan konversi ke RGB
+            img = Image.open(self.path_asli)
             self.arr_asli = np.array(img.convert("RGB"), dtype=np.float32)
-            
-            # Buat thumbnail dari gambar 'img' (yang mungkin punya mode 'P' atau 'RGBA')
+
+            # Tampilkan thumbnail
             img_copy = img.copy()
-            img_copy.thumbnail((IMG_THUMBNAIL_WIDTH, IMG_THUMBNAIL_HEIGHT)) 
+            img_copy.thumbnail((IMG_THUMBNAIL_WIDTH, IMG_THUMBNAIL_HEIGHT))
             img_ctk = ctk.CTkImage(light_image=img_copy, size=img_copy.size)
-            
             self.img_asli_label.configure(image=img_ctk, text="")
             self.img_asli_label.image = img_ctk
-            # Plot histogram dari array float32 RGB
+
+            # === Plot histogram gambar asli ===
             self.plot_histogram(self.arr_asli, self.hist_asli_frame, "Histogram Asli")
-            
+
+            # === Hitung metrik dasar untuk gambar asli ===
             size_kb = os.path.getsize(self.path_asli) / 1024
-            self.table_labels["Asli"]["Ukuran"].configure(text=f"{size_kb:.2f} KB")
-            
-            # HANYA WAKTU, UKURAN, DAN STATUS YANG DIISI
+            hist, _ = np.histogram(self.arr_asli.flatten(), bins=256, range=(0, 255))
+            p = hist / np.sum(hist)
+            p = p[p > 0]
+            entropy_val = -np.sum(p * np.log2(p))
+
+            # Simulasi metrik dasar (MSE, PSNR, SSIM hanya muncul setelah proses en/dekripsi)
             t = time.time() - start_time
             self.table_labels["Asli"]["Waktu"].configure(text=f"{t:.2f} s")
+            self.table_labels["Asli"]["Ukuran"].configure(text=f"{size_kb:.2f} KB")
+            self.table_labels["Asli"]["Entropy"].configure(text=f"{entropy_val:.4f}")
             self.table_labels["Asli"]["Status"].configure(text="Berhasil", text_color="#5CFF79")
-            
+
+            # Aktifkan tombol enkripsi
             self.btn_enkrip.configure(state="normal")
+
         except Exception as e:
             messagebox.showerror("Error", f"Gagal memuat gambar: {e}")
-            self.path_asli = None # Jika gagal load, set path_asli ke None lagi
-            self.reset_ui_state() # Reset lagi jika load gagal total
+            self.path_asli = None
+            self.reset_ui_state()
 
     def reset_ui_state(self):
         self.progress.set(0)
@@ -281,17 +285,18 @@ class cast(ctk.CTk):
             ax.set_facecolor("#202123")
             colors = ["#FF5C5C", "#5CFF79", "#5C95FF"]
             if arr.ndim == 3:
-                for i, color in enumerate(colors): 
+                for i, color in enumerate(colors):
                     ax.hist(arr[..., i].flatten(), bins=256, color=color, alpha=0.7, range=(0, 255))
             else:
                 ax.hist(arr.flatten(), bins=256, color="gray", alpha=0.7, range=(0, 255))
             ax.tick_params(colors='white', which='both', labelsize=8)
             ax.set_title(title, fontsize=10, color="white")
             ax.set_xlabel("Intensitas", color="white", fontsize=9)
-            ax.set_ylabel("Frekuensi", color="white", fontsize=9)
+            ax.set_ylabel("Frekuensi (log)", color="white", fontsize=9)
             ax.set_xlim(0, 255)
+            ax.set_yscale("log")  # tambahan literatur
             ax.grid(alpha=0.1)
-            fig.tight_layout(pad=0.2) 
+            fig.tight_layout(pad=0.2)
             canvas = FigureCanvasTkAgg(fig, master=master_frame)
             canvas.draw()
             canvas.get_tk_widget().pack(fill="both", expand=True, padx=5, pady=5)
@@ -315,71 +320,72 @@ class cast(ctk.CTk):
                     self.after(0, lambda: messagebox.showerror("Error", "Pilih gambar asli terlebih dahulu!"))
                     self.after(0, self.reset_setelah_proses)
                     return
-                password_dialog = ctk.CTkInputDialog(text="Masukkan Password Enkripsi:", title="Password")
+
+                password_dialog = ctk.CTkInputDialog(text="Masukkan Password Enkripsi:", title="Password Enkripsi")
                 password = password_dialog.get_input()
                 if not password:
                     self.after(0, lambda: messagebox.showerror("Error", "Password tidak boleh kosong!"))
                     self.after(0, self.reset_setelah_proses)
                     return
+
                 self.after(0, self.progress.start)
                 dir_name = "temp_results"
                 os.makedirs(dir_name, exist_ok=True)
                 base_name = os.path.splitext(os.path.basename(self.path_asli))[0]
-                out_img = os.path.join(dir_name, f"{base_name}_encrypted_CAST.png")
-                
-                # --- [PERBAIKAN BUG 1] ---
-                self.path_enkripsi = out_img  # <-- SIMPAN PATH ENKRIPSI
-                
+
+                # File hasil
+                out_bin = os.path.join(dir_name, f"{base_name}_encrypted_CAST.bin")
+                out_preview = os.path.join(dir_name, f"{base_name}_encrypted_preview.png")
                 salt_path = os.path.join(dir_name, f"{base_name}_salt_CAST.bin")
                 nonce_path = os.path.join(dir_name, f"{base_name}_nonce_CAST.bin")
                 meta_path = os.path.join(dir_name, f"{base_name}_meta_CAST.json")
-                self.temp_files.extend([out_img, salt_path, nonce_path, meta_path])
-                
-                with Image.open(self.path_asli) as img:
-                    orig_mode = img.mode
-                    # PENTING: Jangan konversi ke RGB di sini. Enkripsi data mentahnya.
-                    arr = np.array(img)
+
+                # Baca gambar asli
+                img = Image.open(self.path_asli).convert("RGB")
+                arr = np.array(img, dtype=np.uint8)
                 original_shape = arr.shape
-                dtype_str = str(arr.dtype) # <-- Dtype asli disimpan di sini
-                if arr.dtype != np.uint8:
-                    arr = (arr / np.max(arr) * 255).astype(np.uint8)
+                dtype_str = str(arr.dtype)
+
                 data = arr.tobytes()
                 salt = get_random_bytes(16)
-                key = PBKDF2(password.encode(), salt, dkLen=16, count=1000000)
                 nonce = get_random_bytes(4)
+                key = PBKDF2(password.encode(), salt, dkLen=16, count=1000000)
+
                 cipher = CAST.new(key, CAST.MODE_CTR, nonce=nonce)
                 enc_data = cipher.encrypt(data)
                 orig_hash = hashlib.sha256(data).hexdigest()
-                
-                # --- PERBAIKAN BUG DTYPE ---
-                try:
-                    # Gunakan dtype_str yang sudah Anda simpan
-                    original_dtype = np.dtype(dtype_str) 
-                    enc_arr = np.frombuffer(enc_data, dtype=original_dtype).reshape(original_shape)
-                except ValueError:
-                    # Fallback jika terjadi kesalahan (seharusnya tidak terjadi sekarang)
-                    enc_arr_flat = np.frombuffer(enc_data, dtype=np.uint8)
-                    size = enc_arr_flat.size
-                    w = int(np.ceil(np.sqrt(size)))
-                    h = int(np.ceil(size / w))
-                    padded_size = w * h
-                    if padded_size > size:
-                        enc_arr_flat = np.pad(enc_arr_flat, (0, padded_size - size), 'constant')
-                    enc_arr = enc_arr_flat.reshape((h, w))
-                # --- AKHIR PERBAIKAN ---
-                    
-                Image.fromarray(enc_arr).save(out_img, format="PNG")
+
+                # Simpan file terenkripsi sebagai .bin (utama)
+                with open(out_bin, "wb") as f:
+                    f.write(enc_data)
+
+                # Simpan salt, nonce, dan meta
                 with open(salt_path, "wb") as f: f.write(salt)
                 with open(nonce_path, "wb") as f: f.write(nonce)
                 meta = {
-                    "orig_mode": orig_mode, "shape": list(original_shape), "dtype": dtype_str, "hash": orig_hash,
-                    "encrypted_image": os.path.basename(out_img), "original_filename": os.path.basename(self.path_asli) 
+                    "orig_mode": img.mode,
+                    "shape": list(original_shape),
+                    "dtype": dtype_str,
+                    "hash": orig_hash,
+                    "encrypted_bin": os.path.basename(out_bin),
+                    "preview_image": os.path.basename(out_preview)
                 }
                 with open(meta_path, "w", encoding="utf-8") as f:
                     json.dump(meta, f, ensure_ascii=False, indent=2)
-                
-                # Buka file yang BARU DISIMPAN, lalu konversi ke RGB untuk array metrik
-                self.arr_enkripsi = np.array(Image.open(out_img).convert("RGB"), dtype=np.float32)
+
+                # Buat preview image acak dari bytes terenkripsi (untuk GUI)
+                enc_arr_flat = np.frombuffer(enc_data, dtype=np.uint8)
+                needed = int(np.prod(original_shape))
+                if enc_arr_flat.size < needed:
+                    enc_arr_flat = np.pad(enc_arr_flat, (0, needed - enc_arr_flat.size), 'constant')
+                enc_arr = enc_arr_flat.reshape(original_shape)
+                Image.fromarray(enc_arr, mode="RGB").save(out_preview, format="PNG")
+
+                # Simpan untuk GUI
+                self.path_enkripsi = out_bin
+                self.arr_enkripsi = enc_arr.astype(np.float32)
+                self.temp_files.extend([out_bin, out_preview, salt_path, nonce_path, meta_path])
+
                 t = time.time() - start_time
                 self.after(0, lambda: self.update_ui_post_encrypt(t))
 
@@ -388,30 +394,30 @@ class cast(ctk.CTk):
                     self.after(0, lambda: messagebox.showerror("Error", "Enkripsi gambar terlebih dahulu!"))
                     self.after(0, self.reset_setelah_proses)
                     return
+
                 dir_name = os.path.dirname(self.path_enkripsi)
-                base_name_enc = os.path.basename(self.path_enkripsi)
-                base_name_noenc = base_name_enc.replace("_encrypted_CAST.png", "")
+                base_name_noenc = os.path.basename(self.path_enkripsi).replace("_encrypted_CAST.bin", "")
                 meta_path = os.path.join(dir_name, f"{base_name_noenc}_meta_CAST.json")
+
                 if not os.path.exists(meta_path):
                     raise FileNotFoundError("File metadata tidak ditemukan!")
-                with open(meta_path, "r", encoding="utf-8") as f: meta = json.load(f)
-                orig_hash = meta.get("hash")
+
+                with open(meta_path, "r", encoding="utf-8") as f:
+                    meta = json.load(f)
+
+                orig_hash = meta["hash"]
                 salt_path = os.path.join(dir_name, f"{base_name_noenc}_salt_CAST.bin")
                 nonce_path = os.path.join(dir_name, f"{base_name_noenc}_nonce_CAST.bin")
-                if not (os.path.exists(salt_path) and os.path.exists(nonce_path)):
-                    raise FileNotFoundError("Salt atau nonce tidak ditemukan!")
-                self.after(0, self.progress.start)
+
                 with open(salt_path, "rb") as f: salt = f.read()
                 with open(nonce_path, "rb") as f: nonce = f.read()
-                
-                # Buka file terenkripsi dan dapatkan data mentahnya
-                with Image.open(self.path_enkripsi) as img: 
-                    # PENTING: Jangan konversi. Baca byte mentahnya
-                    enc_arr_from_file = np.array(img)
-                    enc_bytes = enc_arr_from_file.tobytes()
 
-                dec_bytes = None
+                with open(self.path_enkripsi, "rb") as f:
+                    enc_data = f.read()
+
+                self.after(0, self.progress.start)
                 password = None
+
                 while True:
                     if password is None:
                         password_dialog = ctk.CTkInputDialog(text="Masukkan Password Dekripsi:", title="Password Dekripsi")
@@ -420,36 +426,36 @@ class cast(ctk.CTk):
                             self.after(0, lambda: messagebox.showwarning("Batal", "Dekripsi dibatalkan."))
                             self.after(0, self.reset_setelah_proses)
                             return
+
                     key = PBKDF2(password.encode(), salt, dkLen=16, count=1000000)
                     cipher = CAST.new(key, CAST.MODE_CTR, nonce=nonce)
-                    dec_bytes = cipher.encrypt(enc_bytes) # Dekripsi data mentah
+                    dec_bytes = cipher.encrypt(enc_data)
                     computed_hash = hashlib.sha256(dec_bytes).hexdigest()
+
                     if computed_hash != orig_hash:
-                        self.after(0, lambda: messagebox.showerror("Error", "Password salah silakan coba lagi!"))
-                        password = None; continue
-                    else: break
-                
-                # Gunakan dtype dari meta.json
-                dtype = np.dtype(meta["dtype"])
-                dec_arr = np.frombuffer(dec_bytes, dtype=dtype).reshape(tuple(meta["shape"]))
+                        self.after(0, lambda: messagebox.showerror("Error", "Password salah, silakan coba lagi!"))
+                        password = None
+                        continue
+                    else:
+                        break
+
+                dec_arr = np.frombuffer(dec_bytes, dtype=np.uint8)
+                expected = int(np.prod(meta["shape"]))
+                if dec_arr.size < expected:
+                    dec_arr = np.pad(dec_arr, (0, expected - dec_arr.size), 'constant')
+                dec_arr = dec_arr.reshape(tuple(meta["shape"]))
+
                 out_img = os.path.join(dir_name, f"{base_name_noenc}_decrypted_CAST.png")
-                
-                # --- [PERBAIKAN BUG 2] ---
-                self.path_dekripsi = out_img # <-- SIMPAN PATH DEKRIPSI
-                
-                self.temp_files.append(out_img)
-                # Simpan array yang didekripsi menggunakan mode aslinya
                 Image.fromarray(dec_arr, mode=meta["orig_mode"]).save(out_img, format="PNG")
 
-                # Buka file yang BARU DISIMPAN, lalu konversi ke RGB untuk array metrik
-                self.arr_dekripsi = np.array(Image.open(out_img).convert("RGB"), dtype=np.float32)
+                self.path_dekripsi = out_img
+                self.arr_dekripsi = dec_arr.astype(np.float32)
+
                 t = time.time() - start_time
                 self.after(0, lambda: self.update_ui_post_decrypt(t))
-        except FileNotFoundError as fnf:
-            self.after(0, lambda: messagebox.showerror("Error", f"{fnf}"))
-            self.after(0, self.reset_setelah_proses)
+
         except Exception as e:
-            self.after(0, lambda e=e: messagebox.showerror("Error", f"Terjadi kesalahan:\n{e}"))
+            self.after(0, lambda: messagebox.showerror("Error", f"Kesalahan proses: {e}"))
             self.after(0, self.reset_setelah_proses)
         finally:
             self.after(0, self.progress.stop)
@@ -457,63 +463,57 @@ class cast(ctk.CTk):
 
     def update_ui_post_encrypt(self, t):
         try:
-            # Pastikan path_enkripsi sudah di-set di _proses_gambar_thread
-            if not self.path_enkripsi or not os.path.exists(self.path_enkripsi):
-                 raise FileNotFoundError(f"File enkripsi tidak ditemukan di: {self.path_enkripsi}")
+            # Pastikan file preview hasil enkripsi ada
+            dir_name = os.path.dirname(self.path_enkripsi)
+            base_name_noenc = os.path.basename(self.path_enkripsi).replace("_encrypted_CAST.bin", "")
+            preview_path = os.path.join(dir_name, f"{base_name_noenc}_encrypted_preview.png")
+            if not os.path.exists(preview_path):
+                raise FileNotFoundError(f"File preview enkripsi tidak ditemukan di: {preview_path}")
 
-            img = Image.open(self.path_enkripsi)
+            # Tampilkan gambar hasil enkripsi
+            img = Image.open(preview_path).convert("RGB")
             img_copy = img.copy()
             img_copy.thumbnail((IMG_THUMBNAIL_WIDTH, IMG_THUMBNAIL_HEIGHT))
             img_ctk = ctk.CTkImage(light_image=img_copy, size=img_copy.size)
             self.img_enkrip_label.configure(image=img_ctk, text="")
             self.img_enkrip_label.image = img_ctk
-            
-            # Gunakan arr_enkripsi (yang sudah RGB) untuk plot
+
+            # Plot histogram enkripsi
+            self.arr_enkripsi = np.array(img, dtype=np.uint8)
             self.plot_histogram(self.arr_enkripsi, self.hist_enkrip_frame, "Histogram Enkripsi")
-            hist, _ = np.histogram(self.arr_enkripsi.flatten(), bins=256, range=(0,255))
+
+            # === Hitung Entropy ===
+            hist, _ = np.histogram(self.arr_enkripsi.flatten(), bins=256, range=(0, 255))
             p = hist / np.sum(hist)
             p = p[p > 0]
             H = -np.sum(p * np.log2(p))
+            self.table_labels["Enkripsi"]["Entropy"].configure(text=f"{H:.4f}")
 
-            
+            # === Hitung NPCR, MSE, PSNR, SSIM ===
             if self.arr_asli is not None:
-                # arr_asli dan arr_enkripsi keduanya sudah RGB float32
-                if self.arr_asli.shape == self.arr_enkripsi.shape:
-                    N = np.sum(self.arr_asli.astype(np.uint8) != self.arr_enkripsi.astype(np.uint8)) * 100 / self.arr_asli.size
-                    
-                    # --- [MODIFIKASI DI SINI] ---
-                    # Perhitungan dan tampilan UACI dihapus
-                    # U = np.mean(np.abs(self.arr_asli - self.arr_enkripsi) / 255) * 100 
-                    self.table_labels["Enkripsi"]["NPCR"].configure(text=f"{N:.4f} %")
-                    # self.table_labels["Enkripsi"]["UACI"].configure(text=f"{U:.4f} %")
-
-                    # --- TAMBAHAN UNTUK METRIK "ENKRIPSI" ---
-                    mse_val = mean_squared_error(self.arr_asli, self.arr_enkripsi)
-                    try: 
-                        psnr_val = peak_signal_noise_ratio(self.arr_asli, self.arr_enkripsi, data_range=255)
-                    except ZeroDivisionError: 
+                arr_asli_uint8 = self.arr_asli.astype(np.uint8)
+                arr_enkrip_uint8 = self.arr_enkripsi.astype(np.uint8)
+                if arr_asli_uint8.shape == arr_enkrip_uint8.shape:
+                    npcr = np.sum(arr_asli_uint8 != arr_enkrip_uint8) * 100 / arr_asli_uint8.size
+                    mse_val = mean_squared_error(arr_asli_uint8, arr_enkrip_uint8)
+                    try:
+                        psnr_val = peak_signal_noise_ratio(arr_asli_uint8, arr_enkrip_uint8, data_range=255)
+                    except ZeroDivisionError:
                         psnr_val = float('inf')
-                    ssim_val = ssim(self.arr_asli, self.arr_enkripsi, channel_axis=2, data_range=255)
-                    
+                    ssim_val = ssim(arr_asli_uint8, arr_enkrip_uint8, channel_axis=2, data_range=255)
+                    self.table_labels["Enkripsi"]["NPCR"].configure(text=f"{npcr:.4f} %")
                     self.table_labels["Enkripsi"]["MSE"].configure(text=f"{mse_val:.4f}")
                     self.table_labels["Enkripsi"]["PSNR"].configure(text=f"{psnr_val:.2f} dB")
                     self.table_labels["Enkripsi"]["SSIM"].configure(text=f"{ssim_val:.4f}")
-                    # --- AKHIR TAMBAHAN ---
-                    
-                else:
-                    self.table_labels["Enkripsi"]["NPCR"].configure(text="N/A (dim mismatch)")
-                    # self.table_labels["Enkripsi"]["UACI"].configure(text="N/A (dim mismatch)") # <-- DIHAPUS
-                    self.table_labels["Enkripsi"]["MSE"].configure(text="N/A (dim mismatch)")
-                    self.table_labels["Enkripsi"]["PSNR"].configure(text="N/A (dim mismatch)")
-                    self.table_labels["Enkripsi"]["SSIM"].configure(text="N/A (dim mismatch)")
-            # --- [AKHIR MODIFIKASI] ---
 
-            size_kb = os.path.getsize(self.path_enkripsi) / 1024
-            self.table_labels["Enkripsi"]["Waktu"].configure(text=f"{t:.2f} s")
+            # === Ukuran File & Status ===
+            size_kb = os.path.getsize(preview_path) / 1024
             self.table_labels["Enkripsi"]["Ukuran"].configure(text=f"{size_kb:.2f} KB")
-            self.table_labels["Enkripsi"]["Entropy"].configure(text=f"{H:.4f}")
+            self.table_labels["Enkripsi"]["Waktu"].configure(text=f"{t:.2f} s")
             self.table_labels["Enkripsi"]["Status"].configure(text="Berhasil", text_color="#5CFF79")
+
             self.after(0, lambda: messagebox.showinfo("Sukses", "Enkripsi berhasil!"))
+
         except Exception as e:
             self.after(0, lambda: messagebox.showerror("Error", f"Gagal update UI Enkripsi: {e}"))
         finally:
@@ -521,11 +521,10 @@ class cast(ctk.CTk):
 
     def update_ui_post_decrypt(self, t):
         try:
-            # Pastikan file hasil dekripsi tersedia
             if not self.path_dekripsi or not os.path.exists(self.path_dekripsi):
                 raise FileNotFoundError(f"File dekripsi tidak ditemukan di: {self.path_dekripsi}")
 
-            # Buka hasil dekripsi dalam mode RGB agar entropy benar
+            # === 1. Tampilkan gambar hasil dekripsi ===
             img = Image.open(self.path_dekripsi).convert("RGB")
             img_copy = img.copy()
             img_copy.thumbnail((IMG_THUMBNAIL_WIDTH, IMG_THUMBNAIL_HEIGHT))
@@ -533,50 +532,54 @@ class cast(ctk.CTk):
             self.img_dekrip_label.configure(image=img_ctk, text="")
             self.img_dekrip_label.image = img_ctk
 
-            # Simpan array RGB hasil dekripsi untuk metrik dan histogram
-            self.arr_dekripsi = np.array(img, dtype=np.uint8)
+            # Simpan array hasil dekripsi untuk evaluasi visual
+            self.arr_dekripsi = np.array(img, dtype=np.float32)
 
-            # Plot histogram hasil dekripsi
+            # === 2. Plot histogram hasil dekripsi ===
             self.plot_histogram(self.arr_dekripsi, self.hist_dekrip_frame, "Histogram Dekripsi")
 
-            # --- Hitung ENTROPY dengan benar ---
-            hist, _ = np.histogram(self.arr_dekripsi.flatten(), bins=256, range=(0, 255))
+            # === 3. Hitung Entropy dari file dekripsi (bukan dari array asli) ===
+            img_dec_file = Image.open(self.path_dekripsi).convert("RGB")
+            arr_dec_entropy = np.array(img_dec_file, dtype=np.uint8)
+            hist, _ = np.histogram(arr_dec_entropy.flatten(), bins=256, range=(0, 255))
             p = hist / np.sum(hist)
             p = p[p > 0]
-            dec_entropy = -np.sum(p * np.log2(p))
-            self.table_labels["Dekripsi"]["Entropy"].configure(text=f"{dec_entropy:.4f}")
+            entropy_dec = -np.sum(p * np.log2(p))
+            self.table_labels["Dekripsi"]["Entropy"].configure(text=f"{entropy_dec:.4f}")
 
-            # --- Hitung MSE, PSNR, SSIM ---
+            # === 4. Hitung MSE, PSNR, SSIM (menggunakan hasil file dekripsi) ===
             if self.arr_asli is not None:
-                mse_val = mean_squared_error(self.arr_asli, self.arr_dekripsi)
-            try:
-                psnr_val = peak_signal_noise_ratio(self.arr_asli, self.arr_dekripsi, data_range=255)
-            except ZeroDivisionError:
-                psnr_val = float("inf")
+                arr_dec_compare = np.array(img_dec_file, dtype=np.float32)
 
-            ssim_val = ssim(self.arr_asli, self.arr_dekripsi, channel_axis=2, data_range=255)
+                mse_val = mean_squared_error(self.arr_asli, arr_dec_compare)
+            # Tambahkan epsilon kecil agar tidak tak hingga
+            psnr_val = peak_signal_noise_ratio(self.arr_asli, arr_dec_compare, data_range=255)
+            ssim_val = ssim(self.arr_asli, arr_dec_compare, channel_axis=2, data_range=255)
 
+            # Isi hasil metrik ke tabel Dekripsi
             self.table_labels["Dekripsi"]["MSE"].configure(text=f"{mse_val:.4f}")
-            self.table_labels["Dekripsi"]["PSNR"].configure(
-                text=f"{psnr_val if np.isfinite(psnr_val) else '∞'} dB"
-            )
+            self.table_labels["Dekripsi"]["PSNR"].configure(text=f"{psnr_val:.2f} dB")
             self.table_labels["Dekripsi"]["SSIM"].configure(text=f"{ssim_val:.4f}")
 
-            # --- Ukuran file dan waktu ---
+            # (Opsional) tampilkan juga pada baris Asli agar terlihat perbandingan
+            self.table_labels["Asli"]["MSE"].configure(text=f"{mse_val:.4f}")
+            self.table_labels["Asli"]["PSNR"].configure(text=f"{psnr_val:.2f} dB")
+            self.table_labels["Asli"]["SSIM"].configure(text=f"{ssim_val:.4f}")
+
+            # === 5. Hitung ukuran file & waktu proses ===
             size_kb = os.path.getsize(self.path_dekripsi) / 1024
             self.table_labels["Dekripsi"]["Ukuran"].configure(text=f"{size_kb:.2f} KB")
             self.table_labels["Dekripsi"]["Waktu"].configure(text=f"{t:.2f} s")
-
-            # --- Status ---
             self.table_labels["Dekripsi"]["Status"].configure(text="Berhasil", text_color="#5CFF79")
+
+            # === 6. Beri notifikasi sukses ===
             self.after(0, lambda: messagebox.showinfo("Sukses", "Dekripsi berhasil!"))
 
         except Exception as e:
             self.after(0, lambda: messagebox.showerror("Error", f"Gagal update UI Dekripsi: {e}"))
-
         finally:
             self.reset_setelah_proses(mode="dekripsi")
-            
+ 
     def reset_setelah_proses(self, mode=None):
         self.btn_pilih.configure(state="normal")
         if self.path_asli:
