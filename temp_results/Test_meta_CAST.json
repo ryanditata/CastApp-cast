@@ -1,0 +1,12 @@
+{
+  "orig_mode": "RGB",
+  "shape": [
+    900,
+    1600,
+    3
+  ],
+  "dtype": "uint8",
+  "hash": "ea4e6fbf6577f6204baf354e83889373e66992e2039b0d0d7893761b5efed178",
+  "encrypted_bin": "Test_encrypted_CAST.bin",
+  "preview_image": "Test_encrypted_preview.png"
+}
